@@ -1,224 +1,100 @@
-name: 🔍 Magicrugs Traffic Monitor & Auto-Block (Multi-Stage)
+name: 🔍 Magicrugs Traffic Monitor & Auto-Block
 
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
-# Define environments/stages that run sequentially
 jobs:
-  # STAGE 1: Checkout
-  stage-checkout:
-    name: "STAGE 1️⃣: 📥 Checkout Repository"
+  monitor:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 1
-      
-      - name: List files
-        run: |
-          echo "✅ Repository checked out"
-          ls -la scripts/
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 1
 
-  # STAGE 2: Configure SSH (depends on Stage 1)
-  stage-ssh-config:
-    name: "STAGE 2️⃣: 🔑 Configure SSH"
-    needs: stage-checkout
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Setup SSH
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          echo "✅ SSH configured successfully"
+    - name: 🔑 Configure SSH
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+        EC2_HOST: ${{ secrets.EC2_HOST }}
+        EC2_USER: ${{ secrets.EC2_USER }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-  # STAGE 3: Run Monitor Script (depends on Stage 2)
-  stage-run-monitor:
-    name: "STAGE 3️⃣: 🚀 Run Monitor Script on EC2"
-    needs: stage-ssh-config
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout (for script)
-        uses: actions/checkout@v3
+    - name: 🚀 Run monitor script on EC2
+      env:
+        EC2_HOST: ${{ secrets.EC2_HOST }}
+        EC2_USER: ${{ secrets.EC2_USER }}
+      run: |
+        ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+          "$EC2_USER@$EC2_HOST" << 'REMOTE_SCRIPT'
         
-      - name: Download and run monitor on EC2
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          
-          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-            "$EC2_USER@$EC2_HOST" << 'REMOTE_SCRIPT'
-          
-          # Download and run the monitor script
-          SCRIPT_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/magicrugs_monitor.sh"
-          TEMP_SCRIPT="/tmp/magicrugs_monitor_$RANDOM.sh"
-          
-          # Download the script
-          curl -sSf "$SCRIPT_URL" -o "$TEMP_SCRIPT"
-          
-          if [ ! -f "$TEMP_SCRIPT" ]; then
-            echo "❌ Failed to download script from $SCRIPT_URL"
-            exit 1
-          fi
-          
-          # Fix line endings (CRLF to LF)
-          sed -i 's/\r$//' "$TEMP_SCRIPT"
-          
-          # Make executable
-          chmod +x "$TEMP_SCRIPT"
-          
-          # Run the script
-          "$TEMP_SCRIPT"
-          
-          # Capture exit code
-          EXIT_CODE=$?
-          
-          # Cleanup
-          rm -f "$TEMP_SCRIPT"
-          
-          echo "✅ Monitor script executed on EC2"
-          exit $EXIT_CODE
-          REMOTE_SCRIPT
+        SCRIPT_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/magicrugs_monitor.sh"
+        TEMP_SCRIPT="/tmp/magicrugs_monitor_$RANDOM.sh"
+        
+        curl -sSf "$SCRIPT_URL" -o "$TEMP_SCRIPT"
+        
+        if [ ! -f "$TEMP_SCRIPT" ]; then
+          echo "❌ Failed to download script"
+          exit 1
+        fi
+        
+        sed -i 's/\r$//' "$TEMP_SCRIPT"
+        chmod +x "$TEMP_SCRIPT"
+        "$TEMP_SCRIPT"
+        
+        EXIT_CODE=$?
+        rm -f "$TEMP_SCRIPT"
+        exit $EXIT_CODE
+        REMOTE_SCRIPT
 
-  # STAGE 4: Fetch Reports (depends on Stage 3)
-  stage-fetch-reports:
-    name: "STAGE 4️⃣: 📊 Fetch Reports from EC2"
-    needs: stage-run-monitor
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+    - name: 📊 Fetch reports from EC2
+      env:
+        EC2_HOST: ${{ secrets.EC2_HOST }}
+        EC2_USER: ${{ secrets.EC2_USER }}
+      run: |
+        mkdir -p reports
         
-      - name: Fetch reports from EC2
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          
-          mkdir -p reports
-          
-          # Get the latest report from EC2
-          scp -o ConnectTimeout=10 \
-            "$EC2_USER@$EC2_HOST:/var/log/magicrugs-monitor/monitor_report_*.txt" \
-            reports/ 2>/dev/null || echo "⚠️ No reports found yet"
-          
-          # List what was fetched
-          if [ -f reports/monitor_report_*.txt ]; then
-            echo "✅ Latest report:"
-            ls -lh reports/monitor_report_*.txt | tail -1
-          fi
+        scp -o ConnectTimeout=10 \
+          "$EC2_USER@$EC2_HOST:/var/log/magicrugs-monitor/monitor_report_*.txt" \
+          reports/ 2>/dev/null || echo "⚠️ No reports found yet"
+        
+        if [ -f reports/monitor_report_*.txt ]; then
+          echo "✅ Latest report:"
+          ls -lh reports/monitor_report_*.txt | tail -1
+        fi
 
-  # STAGE 5: Commit Reports (depends on Stage 4)
-  stage-commit-reports:
-    name: "STAGE 5️⃣: 📝 Commit Reports to Repository"
-    needs: stage-fetch-reports
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+    - name: 📝 Commit reports to repository
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
         
-      - name: Fetch reports again for commit
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          
-          mkdir -p reports
-          scp -o ConnectTimeout=10 \
-            "$EC2_USER@$EC2_HOST:/var/log/magicrugs-monitor/monitor_report_*.txt" \
-            reports/ 2>/dev/null || true
+        git add reports/ || true
         
-      - name: Commit to repository
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          
-          git add reports/ || true
-          
-          if git diff --cached --quiet; then
-            echo "ℹ️ No new reports to commit"
-          else
-            git commit -m "🔄 Auto: Monitor report $(date +'%Y-%m-%d %H:%M:%S')" || true
-            git push || true
-          fi
-        continue-on-error: true
+        if git diff --cached --quiet; then
+          echo "ℹ️ No new reports to commit"
+        else
+          git commit -m "🔄 Auto: Monitor report $(date +'%Y-%m-%d %H:%M:%S')" || true
+          git push || true
+        fi
+      continue-on-error: true
 
-  # STAGE 6: Generate Summary (depends on Stage 5)
-  stage-summary:
-    name: "STAGE 6️⃣: 📋 Generate Summary"
-    needs: stage-commit-reports
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+    - name: 📋 Generate summary
+      if: always()
+      run: |
+        echo "## 🔍 Monitor Execution Summary" >> $GITHUB_STEP_SUMMARY
+        echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "**Connection:** SSH via Elastic IP" >> $GITHUB_STEP_SUMMARY
         
-      - name: Fetch final reports for summary
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          
-          mkdir -p reports
-          scp -o ConnectTimeout=10 \
-            "$EC2_USER@$EC2_HOST:/var/log/magicrugs-monitor/monitor_report_*.txt" \
-            reports/ 2>/dev/null || true
-        continue-on-error: true
-        
-      - name: Generate execution summary
-        run: |
-          echo "## 🔍 Monitor Execution Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Workflow Status:** ✅ Complete" >> $GITHUB_STEP_SUMMARY
-          echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Stages Completed" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Stage 1: Checkout Repository" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Stage 2: Configure SSH" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Stage 3: Run Monitor Script on EC2" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Stage 4: Fetch Reports from EC2" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Stage 5: Commit Reports to Repository" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Stage 6: Generate Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f reports/monitor_report_*.txt ]; then
-            echo "### Latest Report" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            head -30 reports/monitor_report_*.txt | tail -25 >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          fi
+        if [ -f reports/monitor_report_*.txt ]; then
+          echo "### Latest Report" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          head -30 reports/monitor_report_*.txt | tail -25 >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
