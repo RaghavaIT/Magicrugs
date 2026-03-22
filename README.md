@@ -1,0 +1,2 @@
+# Magicrugs
+Magicrugs web app
