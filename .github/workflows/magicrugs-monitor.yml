@@ -1,4 +1,4 @@
-name: Magicrugs Traffic Monitor - Fixed
+name: Magicrugs Monitor - GitHub Actions Execution
 
 on:
   schedule:
@@ -16,12 +16,18 @@ jobs:
         with:
           fetch-depth: 1
       
-      - name: Verify repository
+      - name: Verify script exists
         run: |
           echo "===== STAGE 1 COMPLETE ====="
-          echo "Repository: ${{ github.repository }}"
-          echo "Branch: ${{ github.ref }}"
-          ls -la
+          echo "Checking for monitor script in repo..."
+          if [ -f "scripts/Monitor/magicrugs_monitor.sh" ]; then
+            echo "Script found: scripts/Monitor/magicrugs_monitor.sh"
+            wc -l scripts/Monitor/magicrugs_monitor.sh
+          else
+            echo "ERROR: Script not found!"
+            echo "Expected location: scripts/Monitor/magicrugs_monitor.sh"
+            exit 1
+          fi
 
   stage-2-ssh:
     name: "STAGE 2: Configure SSH"
@@ -36,7 +42,7 @@ jobs:
           EC2_USER: ${{ secrets.EC2_USER }}
         run: |
           set -e
-          echo "Setting up SSH keys..."
+          echo "Setting up SSH..."
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
@@ -49,12 +55,17 @@ jobs:
           }
           echo "STAGE 2 COMPLETE"
 
-  stage-3-monitor:
-    name: "STAGE 3: Run Monitor Script on EC2"
+  stage-3-execute:
+    name: "STAGE 3: Download & Execute Script"
     needs: stage-2-ssh
     runs-on: ubuntu-latest
     
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+      
       - name: Setup SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
@@ -65,27 +76,35 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
       
-      - name: Check script exists and run
+      - name: Transfer and execute script
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
         run: |
           set -e
-          echo "Checking if monitor script exists on EC2..."
+          
+          echo "Transferring script to EC2..."
+          TEMP_SCRIPT="/tmp/magicrugs_monitor_$RANDOM.sh"
+          scp -o ConnectTimeout=10 scripts/Monitor/magicrugs_monitor.sh \
+            "$EC2_USER@$EC2_HOST:$TEMP_SCRIPT"
+          
+          echo "Making script executable..."
           ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" \
-            "test -x /usr/local/bin/magicrugs-monitor.sh" || {
-            echo "ERROR: Script not found at /usr/local/bin/magicrugs-monitor.sh"
-            echo "Please upload the fixed script first"
-            exit 1
-          }
-          echo "Running monitor script on EC2..."
+            "chmod +x $TEMP_SCRIPT"
+          
+          echo "Running monitor script..."
           ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" \
-            "bash /usr/local/bin/magicrugs-monitor.sh"
+            "bash $TEMP_SCRIPT"
+          
+          echo "Cleaning up temporary script..."
+          ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" \
+            "rm -f $TEMP_SCRIPT"
+          
           echo "STAGE 3 COMPLETE"
 
-  stage-4-fetch:
+  stage-4-fetch-reports:
     name: "STAGE 4: Fetch Reports from EC2"
-    needs: stage-3-monitor
+    needs: stage-3-execute
     runs-on: ubuntu-latest
     
     steps:
@@ -108,14 +127,15 @@ jobs:
           EC2_USER: ${{ secrets.EC2_USER }}
         run: |
           set -e
-          echo "Fetching reports from EC2..."
+          
           echo "Checking if report directory exists..."
           ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" \
             "ls -la /var/log/magicrugs-monitor/" || {
             echo "ERROR: Report directory not found on EC2!"
             exit 1
           }
-          echo "Reading report file..."
+          
+          echo "Getting latest report file..."
           REPORT_FILE=$(ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" \
             "ls -t /var/log/magicrugs-monitor/monitor_report_*.txt 2>/dev/null | head -1")
           
@@ -125,9 +145,8 @@ jobs:
           fi
           
           echo "Fetching report file..."
-          ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" \
-            "cat $REPORT_FILE" \
-            > "reports/monitor_report_$(date +%Y%m%d_%H%M%S).txt"
+          scp -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST:$REPORT_FILE" \
+            "reports/monitor_report_$(date +%Y%m%d_%H%M%S).txt"
           
           if [ ! -f reports/monitor_report_*.txt ]; then
             echo "ERROR: Failed to save report!"
@@ -138,16 +157,13 @@ jobs:
           ls -lh reports/
           echo "STAGE 4 COMPLETE"
 
-  stage-5-artifact:
-    name: "STAGE 5: Upload Reports as Artifacts"
-    needs: stage-4-fetch
+  stage-5-artifacts:
+    name: "STAGE 5: Upload Artifacts"
+    needs: stage-4-fetch-reports
     runs-on: ubuntu-latest
     if: always()
     
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
       - name: Create reports directory
         run: mkdir -p reports
 
@@ -161,16 +177,17 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Fetch report for artifact
+      - name: Download report
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
         run: |
           REPORT_FILE=$(ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" \
             "ls -t /var/log/magicrugs-monitor/monitor_report_*.txt 2>/dev/null | head -1")
+          
           if [ -n "$REPORT_FILE" ]; then
-            ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" "cat $REPORT_FILE" \
-              > "reports/monitor_report_$(date +%Y%m%d_%H%M%S).txt"
+            scp -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST:$REPORT_FILE" \
+              "reports/monitor_report_$(date +%Y%m%d_%H%M%S).txt"
           fi
 
       - name: Upload reports artifact
@@ -180,14 +197,11 @@ jobs:
           path: reports/
           retention-days: 30
 
-      - name: Display report preview
+      - name: Display report
         run: |
           if [ -f reports/monitor_report_*.txt ]; then
-            echo "REPORT PREVIEW"
-            echo "=================================================="
+            echo "Report Preview:"
             head -100 reports/monitor_report_*.txt
-            echo ""
-            echo "Full report available in artifacts"
           fi
 
       - name: Create job summary
@@ -198,19 +212,16 @@ jobs:
             echo ""
             if [ -f reports/monitor_report_*.txt ]; then
               REPORT=$(ls -t reports/monitor_report_*.txt | head -1)
-              echo "### Summary"
-              grep -A 20 "SUMMARY" "$REPORT" | head -25 || echo "Report summary"
-              echo ""
               echo "### Key Metrics"
-              grep "Total Requests\|404 Not Found\|500 Server Error\|Bot Requests\|Status" "$REPORT" | head -5
+              grep "Total Requests\|404 Not Found\|500 Server Error\|Bot Requests" "$REPORT" | head -5
               echo ""
-              echo "Full report available in Artifacts"
+              echo "Reports available in Artifacts section"
             else
-              echo "WARNING: No report generated"
+              echo "No report generated"
             fi
           } >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload to GitHub as artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
           name: magicrugs-monitor-latest
@@ -218,51 +229,50 @@ jobs:
           retention-days: 30
 
       - name: STAGE 5 COMPLETE
-        run: echo "STAGE 5 COMPLETE - Reports uploaded as artifacts"
+        run: echo "Reports uploaded as artifacts"
 
   stage-6-summary:
     name: "STAGE 6: Final Summary"
     needs:
       - stage-1-checkout
       - stage-2-ssh
-      - stage-3-monitor
-      - stage-4-fetch
-      - stage-5-artifact
+      - stage-3-execute
+      - stage-4-fetch-reports
+      - stage-5-artifacts
     runs-on: ubuntu-latest
     if: always()
     
     steps:
-      - name: Generate final summary
+      - name: Generate summary
         run: |
           {
-            echo "## Magicrugs Traffic Monitor - Pipeline Complete"
+            echo "## Magicrugs Monitor - Execution Summary"
             echo ""
-            echo "### Pipeline Status"
-            if [ "${{ needs.stage-3-monitor.result }}" = "success" ] && \
-               [ "${{ needs.stage-4-fetch.result }}" = "success" ]; then
-              echo "**Status: SUCCESS - All stages completed**"
+            echo "### Status"
+            if [ "${{ needs.stage-3-execute.result }}" = "success" ]; then
+              echo "SUCCESS - Pipeline executed successfully"
             else
-              echo "**Status: PARTIAL - Some stages failed**"
+              echo "FAILED - Check logs above"
             fi
             echo ""
             echo "### Execution Summary"
-            echo "| Stage | Status |"
+            echo "| Stage | Result |"
             echo "|-------|--------|"
             echo "| 1: Checkout | ${{ needs.stage-1-checkout.result }} |"
             echo "| 2: SSH Setup | ${{ needs.stage-2-ssh.result }} |"
-            echo "| 3: Run Monitor | ${{ needs.stage-3-monitor.result }} |"
-            echo "| 4: Fetch Reports | ${{ needs.stage-4-fetch.result }} |"
-            echo "| 5: Upload Artifacts | ${{ needs.stage-5-artifact.result }} |"
+            echo "| 3: Execute | ${{ needs.stage-3-execute.result }} |"
+            echo "| 4: Fetch | ${{ needs.stage-4-fetch-reports.result }} |"
+            echo "| 5: Artifacts | ${{ needs.stage-5-artifacts.result }} |"
             echo ""
-            echo "### Configuration"
-            echo "- Script Location: /usr/local/bin/magicrugs-monitor.sh"
-            echo "- Report Location: /var/log/magicrugs-monitor/"
-            echo "- Timezone: UTC"
+            echo "### How It Works"
+            echo "1. Downloads script from GitHub repo"
+            echo "2. Transfers to EC2 via SCP"
+            echo "3. Executes on EC2"
+            echo "4. Cleans up (removes script from EC2)"
+            echo "5. Fetches reports back to GitHub"
+            echo "6. Uploads as artifacts"
             echo ""
-            echo "### Troubleshooting"
-            echo "If reports not generating:"
-            echo "1. SSH to EC2 and test: bash /usr/local/bin/magicrugs-monitor.sh"
-            echo "2. Check permissions: ls -la /var/log/magicrugs-monitor/"
-            echo "3. Check logs exist: ls -la /var/log/nginx/access.log"
+            echo "No permanent installation needed on EC2!"
           } >> $GITHUB_STEP_SUMMARY
+          
           echo "STAGE 6 COMPLETE"
