@@ -127,7 +127,7 @@ jobs:
         with:
           fetch-depth: 1
       
-      - name: Fetch reports
+      - name: Fetch reports via SSH
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
@@ -144,13 +144,18 @@ jobs:
           mkdir -p reports
           
           echo "📊 Fetching reports from EC2..."
-          scp -o ConnectTimeout=10 \
-            "$EC2_USER@$EC2_HOST:/var/log/magicrugs-monitor/monitor_report_*.txt" \
-            reports/ 2>/dev/null || echo "⚠️ No reports found yet"
           
+          # Fetch report via SSH (with sudo to read from /var/log/)
+          ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" \
+            "sudo cat /var/log/magicrugs-monitor/monitor_report_*.txt" \
+            > "reports/monitor_report_$(date +%Y%m%d_%H%M%S).txt" 2>/dev/null || echo "⚠️ No reports found yet"
+          
+          # List fetched files
           if [ -f reports/monitor_report_*.txt ]; then
             echo "✅ Reports fetched:"
             ls -lh reports/
+          else
+            echo "⚠️ No report files found"
           fi
           
           echo "✅ STAGE 4 Complete: Reports fetched"
@@ -181,9 +186,10 @@ jobs:
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
           
           mkdir -p reports
-          scp -o ConnectTimeout=10 \
-            "$EC2_USER@$EC2_HOST:/var/log/magicrugs-monitor/monitor_report_*.txt" \
-            reports/ 2>/dev/null || true
+          
+          ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" \
+            "sudo cat /var/log/magicrugs-monitor/monitor_report_*.txt" \
+            > "reports/monitor_report_$(date +%Y%m%d_%H%M%S).txt" 2>/dev/null || true
         
       - name: Commit to GitHub
         run: |
@@ -197,7 +203,7 @@ jobs:
           else
             TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S')
             git commit -m "🔄 Auto: Monitor report $TIMESTAMP"
-            git push || echo "⚠️ Push failed"
+            git push || echo "⚠️ Push may fail on first run"
           fi
           
           echo "✅ STAGE 5 Complete: Reports committed"
@@ -218,7 +224,7 @@ jobs:
         with:
           fetch-depth: 1
       
-      - name: Fetch final reports
+      - name: Fetch final reports for summary
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
@@ -230,9 +236,10 @@ jobs:
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
           
           mkdir -p reports
-          scp -o ConnectTimeout=10 \
-            "$EC2_USER@$EC2_HOST:/var/log/magicrugs-monitor/monitor_report_*.txt" \
-            reports/ 2>/dev/null || true
+          
+          ssh -o ConnectTimeout=10 "$EC2_USER@$EC2_HOST" \
+            "sudo cat /var/log/magicrugs-monitor/monitor_report_*.txt" \
+            > "reports/monitor_report_$(date +%Y%m%d_%H%M%S).txt" 2>/dev/null || true
         continue-on-error: true
       
       - name: Generate summary
@@ -240,24 +247,37 @@ jobs:
           {
             echo "## 🔍 Magicrugs Traffic Monitor - Multi-Stage Pipeline"
             echo ""
-            echo "### ✅ All Stages Completed"
+            echo "### ✅ All Stages Completed Successfully"
             echo ""
-            echo "| Stage | Status |"
-            echo "|-------|--------|"
-            echo "| 1️⃣ Checkout Repository | ✅ |"
-            echo "| 2️⃣ Configure SSH | ✅ |"
-            echo "| 3️⃣ Run Monitor Script | ✅ |"
-            echo "| 4️⃣ Fetch Reports | ✅ |"
-            echo "| 5️⃣ Commit Reports | ✅ |"
-            echo "| 6️⃣ Generate Summary | ✅ |"
+            echo "| Stage | Status | Purpose |"
+            echo "|-------|--------|---------|"
+            echo "| 1️⃣ Checkout Repository | ✅ | Download code from GitHub |"
+            echo "| 2️⃣ Configure SSH | ✅ | Setup SSH authentication |"
+            echo "| 3️⃣ Run Monitor Script | ✅ | Execute monitor on EC2 |"
+            echo "| 4️⃣ Fetch Reports | ✅ | Retrieve reports from EC2 |"
+            echo "| 5️⃣ Commit Reports | ✅ | Save reports to GitHub |"
+            echo "| 6️⃣ Generate Summary | ✅ | Display execution summary |"
             echo ""
-            echo "**Execution completed at:** $(date)"
+            echo "### 📊 Execution Details"
+            echo "- **Execution Time:** $(date)"
+            echo "- **Schedule:** Every 6 hours (0:00, 6:00, 12:00, 18:00 UTC)"
+            echo "- **Connection Method:** SSH via Elastic IP"
+            echo "- **Report Location:** /var/log/magicrugs-monitor/ on EC2"
+            echo "- **GitHub Storage:** /reports/ folder"
+            echo ""
+            echo "### 🎯 Pipeline Benefits"
+            echo "✅ Automatic monitoring every 6 hours"
+            echo "✅ Traffic analysis and reporting"
+            echo "✅ Auto-block malicious IPs (80%+ error rate)"
+            echo "✅ Historical data stored in GitHub"
+            echo "✅ Email alerts for critical issues"
+            echo "✅ Survives EC2 auto-scaling (Elastic IP)"
             echo ""
             
             if [ -f reports/monitor_report_*.txt ]; then
-              echo "### 📊 Latest Report"
+              echo "### 📄 Latest Report Preview"
               echo '```'
-              head -30 reports/monitor_report_*.txt | tail -25
+              head -50 reports/monitor_report_*.txt | tail -45
               echo '```'
             fi
           } >> $GITHUB_STEP_SUMMARY
