@@ -5,6 +5,7 @@
 # Executed via GitHub Actions on EC2 instance
 # Report saved to /var/log/magicrugs-monitor/
 # Window: last 48 hours to current time (dynamic, no fixed dates)
+# FIX: UTC timezone aware for India-based servers (UTC+5:30)
 # ============================================================
 
 # ─────────────────────────────────────────────
@@ -33,23 +34,25 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 mkdir -p "$REPORT_DIR"
-NOW=$(date '+%Y-%m-%d %H:%M:%S')
-DATE_TAG=$(date '+%Y%m%d_%H%M')
+NOW=$(TZ=UTC date '+%Y-%m-%d %H:%M:%S UTC')
+DATE_TAG=$(TZ=UTC date '+%Y%m%d_%H%M')
 REPORT_FILE="$REPORT_DIR/monitor_report_$DATE_TAG.txt"
-START_DATE=$(date -d "$DAYS days ago" '+%Y-%m-%d' 2>/dev/null || date -v-${DAYS}d '+%Y-%m-%d')
-END_DATE=$(date '+%Y-%m-%d')
+START_DATE=$(TZ=UTC date -d "$DAYS days ago" '+%Y-%m-%d' 2>/dev/null || TZ=UTC date -v-${DAYS}d '+%Y-%m-%d')
+END_DATE=$(TZ=UTC date '+%Y-%m-%d')
 
-echo -e "${BLUE}[magicrugs monitor]${NC} Window: $START_DATE to $END_DATE (48 hours)"
+echo -e "${BLUE}[magicrugs monitor]${NC} Window: $START_DATE to $END_DATE (48 hours UTC)"
 
 # ─────────────────────────────────────────────
-# BUILD DATE PATTERNS — last 48 hours dynamically
+# BUILD DATE PATTERNS — last 48 hours dynamically (UTC)
 # ─────────────────────────────────────────────
 DATE_PATTERNS=""
 for i in $(seq 0 $((DAYS-1))); do
-    D=$(date -d "$i days ago" '+%d/%b/%Y' 2>/dev/null || date -v-${i}d '+%d/%b/%Y')
+    D=$(TZ=UTC date -d "$i days ago" '+%d/%b/%Y' 2>/dev/null || TZ=UTC date -v-${i}d '+%d/%b/%Y')
     DATE_PATTERNS="${DATE_PATTERNS}${D}\|"
 done
 DATE_PATTERNS=$(echo "$DATE_PATTERNS" | sed 's/\\|$//')
+
+echo -e "${BLUE}[magicrugs monitor]${NC} Date patterns: $DATE_PATTERNS"
 
 # Filter logs
 WEEK_LOGS=$(grep -E "$DATE_PATTERNS" "$NGINX_LOG" 2>/dev/null)
@@ -89,8 +92,8 @@ C_VPN=$(echo "$WEEK_LOGS" | grep -cE 'global-protect|ssl-vpn|dana-na|myvpn|vpntu
 # Daily breakdown
 DAILY_BREAKDOWN=""
 for i in $(seq $((DAYS-1)) -1 0); do
-    D=$(date -d "$i days ago" '+%d/%b/%Y' 2>/dev/null || date -v-${i}d '+%d/%b/%Y')
-    D_LABEL=$(date -d "$i days ago" '+%Y-%m-%d (%A)' 2>/dev/null || date -v-${i}d '+%Y-%m-%d')
+    D=$(TZ=UTC date -d "$i days ago" '+%d/%b/%Y' 2>/dev/null || TZ=UTC date -v-${i}d '+%d/%b/%Y')
+    D_LABEL=$(TZ=UTC date -d "$i days ago" '+%Y-%m-%d (%A)' 2>/dev/null || TZ=UTC date -v-${i}d '+%Y-%m-%d')
     D_TOTAL=$(echo "$WEEK_LOGS" | grep "$D" | wc -l)
     D_404=$(echo "$WEEK_LOGS" | grep "$D" | grep -c '" 404 ')
     D_500=$(echo "$WEEK_LOGS" | grep "$D" | grep -c '" 500 ')
@@ -102,7 +105,7 @@ done
 CPU=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' 2>/dev/null || echo "N/A")
 MEM=$(free -m | awk 'NR==2{printf "%.1f%%", $3*100/$2}' 2>/dev/null || echo "N/A")
 DISK=$(df -h /var/www/html | awk 'NR==2{print $5}' 2>/dev/null || echo "N/A")
-PHP_STATUS=$(systemctl status php-fpm 2>/dev/null | grep "Status:" | sed 's/.*Status: //')
+PHP_STATUS=$(systemctl status php-fpm 2>/dev/null | grep "Status:" | sed 's/.*Status: //' || echo "N/A")
 PHP_SLOW=$(systemctl status php-fpm 2>/dev/null | grep -o 'slow: [0-9]*' | head -1 || echo "slow: 0")
 
 # ─────────────────────────────────────────────
@@ -154,7 +157,7 @@ while IFS= read -r line; do
     if [ "$ERROR_PCT" -ge 80 ] && [ "$ERROR_COUNT" -ge 10 ]; then
         BLOCKED_IPS+=("$IP — $ERROR_COUNT/$TOTAL errors ($ERROR_PCT%)")
         if [ -f "$BLOCK_FILE" ] && ! grep -q "$IP" "$BLOCK_FILE" 2>/dev/null; then
-            echo "deny $IP;  # auto-blocked $(date '+%Y-%m-%d %H:%M') — $ERROR_COUNT/$TOTAL errors ($ERROR_PCT%)" >> "$BLOCK_FILE"
+            echo "deny $IP;  # auto-blocked $(TZ=UTC date '+%Y-%m-%d %H:%M UTC') — $ERROR_COUNT/$TOTAL errors ($ERROR_PCT%)" >> "$BLOCK_FILE"
             NEW_BLOCKS="$NEW_BLOCKS\n  $IP — $ERROR_COUNT/$TOTAL ($ERROR_PCT%) — NEWLY BLOCKED"
         fi
     fi
@@ -176,7 +179,7 @@ cat > "$REPORT_FILE" << REPORT
   $ALERT_SYMBOL  $SITE — 48-HOUR TRAFFIC & ERROR REPORT
   Status     : $ALERT
   Generated  : $NOW
-  Window     : Last 48 hours ($START_DATE  to  $END_DATE)
+  Window     : Last 48 hours ($START_DATE  to  $END_DATE UTC)
   Report     : $REPORT_FILE
 ====================================================================
 
@@ -327,7 +330,7 @@ ls -t "$REPORT_DIR"/monitor_report_*.txt 2>/dev/null | tail -n +21 | xargs rm -f
 echo ""
 echo -e "${BLUE}════════════════════════════════════════════════${NC}"
 echo -e "  $ALERT_SYMBOL  Status      : ${RED}$ALERT${NC}"
-echo -e "  Window      : $START_DATE → $END_DATE (48 hours)"
+echo -e "  Window      : $START_DATE → $END_DATE (UTC)"
 echo -e "  Total Req   : $TOTAL"
 echo -e "  404 Errors  : $C_404"
 echo -e "  500 Errors  : $C_500"
