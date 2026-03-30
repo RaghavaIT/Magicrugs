@@ -1,10 +1,7 @@
 name: Magicrugs Monitor - GitHub Actions Execution
 permissions:
   contents: write
-on:
-  schedule:
-    - cron: '0 */6 * * *'
-  workflow_dispatch:
+
 
 jobs:
   stage-1-checkout:
